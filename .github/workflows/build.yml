@@ -9,24 +9,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: List repo root (debug)
+        run: |
+          echo "== REPO ROOT =="
+          ls -la
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      # 1) 解压 ZIP
+      # 1) 自动寻找仓库根目录的 ZIP（任意名字），优先取第一个
+      - name: Locate project ZIP
+        id: zip
+        shell: bash
+        run: |
+          set -e
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n1 || true)
+          if [ -z "$ZIP" ]; then
+            echo "❌ 根目录没有找到 .zip 文件，请把源码压缩包放到仓库根目录再试"; exit 1
+          fi
+          echo "Using ZIP: $ZIP"
+          echo "ZIP=$ZIP" | tee -a $GITHUB_OUTPUT
+
+      # 2) 解压 ZIP
       - name: Unzip project ZIP
         run: |
-          unzip -q ScreenCastProject_fixed_final.zip -d srczip
+          set -e
+          unzip -q "${{ steps.zip.outputs.ZIP }}" -d srczip
           echo "== Unzipped to srczip =="
           find srczip -maxdepth 3 -type d -printf "%p\n"
 
-      # 2) 自动识别两个 Android 工程（含 gradlew 且含 app/build.gradle）
+      # 3) 自动识别两个 Android 工程（含 gradlew 且含 app/build.gradle*）
       - name: Detect Android projects in ZIP
         id: detect
         shell: bash
         run: |
+          set -e
           mapfile -t PROJ < <(find srczip -type f -name "gradlew" -printf "%h\n" \
                             | while read d; do
                                 if [ -f "$d/app/build.gradle" ] || [ -f "$d/app/build.gradle.kts" ]; then
@@ -41,41 +61,41 @@ jobs:
             exit 1
           fi
 
-          # 取前两个作为 发送端/接收端（顺序不重要，后续你可按需要对调）
-          SENDER="${PROJ[0]}"
-          RECEIVER="${PROJ[1]}"
+          echo "SENDER=${PROJ[0]}"   | tee -a $GITHUB_OUTPUT
+          echo "RECEIVER=${PROJ[1]}" | tee -a $GITHUB_OUTPUT
 
-          echo "SENDER=$SENDER"   | tee -a $GITHUB_OUTPUT
-          echo "RECEIVER=$RECEIVER" | tee -a $GITHUB_OUTPUT
-
-      # 3) 规范化到固定目录
+      # 4) 规范化到固定目录
       - name: Normalize project folders
         run: |
+          set -e
           rm -rf phone-caster car-receiver
           rsync -a "${{ steps.detect.outputs.SENDER }}/"   phone-caster/
           rsync -a "${{ steps.detect.outputs.RECEIVER }}/" car-receiver/
           echo "== phone-caster =="
-          ls -la phone-caster | head -n 50
+          ls -la phone-caster | head -n 80
           echo "== car-receiver =="
-          ls -la car-receiver | head -n 50
+          ls -la car-receiver | head -n 80
 
-      # 4) 切换 Gradle wrapper 分发镜像，并授予 gradlew 可执行权限
+      # 5) 切换 Gradle 分发镜像并赋权 gradlew
       - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
+          set -e
           for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
             if [ -f "$f" ]; then
               cp "$f" "$f.bak" || true
-              # 镜像1：Gradle 中国镜像
+              # 镜像1：Gradle 中国镜像（默认）
               sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-              # 如果上面不稳定，可改用腾讯云镜像（把上一行注释，放开下一行）
+              # 可切换镜像2：腾讯云（如上不稳就把上一行注释掉、放开下一行）
               # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
-              echo "---- $f ----"; cat "$f"
+              echo "---- $f ----"; tail -n +1 "$f"
+            else
+              echo "⚠️ 未找到 $f，跳过"
             fi
           done
           chmod +x phone-caster/gradlew || true
           chmod +x car-receiver/gradlew || true
 
-      # 5) 编译两个工程（使用各自 wrapper，避免 setup-gradle 的分发下载问题）
+      # 6) 编译两个工程（使用各自 wrapper）
       - name: Build phone-caster (debug)
         working-directory: phone-caster
         env:
@@ -88,7 +108,7 @@ jobs:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
-      # 6) 收集 APK 并打包
+      # 7) 收集 APK 打包
       - name: Collect APKs into a single ZIP
         run: |
           mkdir -p out
