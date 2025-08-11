@@ -15,12 +15,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Gradle 8.6
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.6
-          cache-read-only: false
-
       - name: Unzip project from repo ZIP
         run: |
           mkdir -p phone-caster car-receiver
@@ -34,26 +28,31 @@ jobs:
           rsync -a "$CAR_DIR"/ car-receiver/
           ls -la phone-caster car-receiver
 
-      # ★★★ 新增：把 Gradle 分发地址切到国内镜像（腾讯云/Gradle 中国镜像，二选一）
-      - name: Switch Gradle distribution mirror
+      # 改 wrapper 的分发地址到国内镜像，然后给 gradlew 可执行权限
+      - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
           for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
-            # 备份
             cp "$f" "$f.bak" || true
-            # 常用镜像1：Gradle 中国镜像
+            # 方案1：Gradle 中国镜像
             sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-            # 可改用镜像2：腾讯云
+            # 如需改用腾讯云镜像，换成这一行：
             # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
             echo "---- $f ----"; cat "$f"
           done
+          chmod +x phone-caster/gradlew || true
+          chmod +x car-receiver/gradlew || true
 
       - name: Build phone-caster (debug)
         working-directory: phone-caster
-        run: ./gradlew assembleDebug --stacktrace || gradle assembleDebug --stacktrace
+        env:
+          GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Build car-receiver (debug)
         working-directory: car-receiver
-        run: ./gradlew assembleDebug --stacktrace || gradle assembleDebug --stacktrace
+        env:
+          GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Collect APKs into a single ZIP
         run: |
