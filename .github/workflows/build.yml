@@ -84,6 +84,21 @@ jobs:
           ls -la phone-caster | head -n 120
           echo "== car-receiver top =="
           ls -la car-receiver | head -n 120
+          
+                # 安装 Android SDK（命令行工具）并准备必需组件
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -e
+          sdkmanager --version
+          yes | sdkmanager --licenses || true
+          # 安装常用版本，覆盖 compileSdk 33/34 的场景
+          sdkmanager "platform-tools" \
+                     "platforms;android-34" "build-tools;34.0.0" \
+                     "platforms;android-33" "build-tools;33.0.2"
 
       # 5) 若项目没有 wrapper：多镜像兜底下载 Gradle，自举生成 wrapper，并替换分发镜像
       - name: Bootstrap Gradle wrapper if missing (both projects)
@@ -149,7 +164,7 @@ jobs:
           ensure_wrapper car-receiver
 
       # 6) 用（找到或生成的）wrapper 编译
-      - name: Build phone-caster (debug)
+            - name: Build phone-caster (debug)
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: |
@@ -161,9 +176,10 @@ jobs:
           fi
           chmod +x "$WRAP"
           echo "Use wrapper: $WRAP"
-          "$WRAP" --no-daemon --stacktrace assembleDebug
+          "$WRAP" --no-daemon --stacktrace --info --warning-mode all assembleDebug
 
-      - name: Build car-receiver (debug)
+
+           - name: Build car-receiver (debug)
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: |
@@ -175,7 +191,8 @@ jobs:
           fi
           chmod +x "$WRAP"
           echo "Use wrapper: $WRAP"
-          "$WRAP" --no-daemon --stacktrace assembleDebug
+          "$WRAP" --no-daemon --stacktrace --info --warning-mode all assembleDebug
+
 
       # 7) 收集 APK 打包
       - name: Collect APKs into a single ZIP
