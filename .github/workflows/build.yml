@@ -4,7 +4,7 @@ on: [workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
           echo "== Unzipped to srczip (depth 5) =="
           find srczip -maxdepth 5 -printf "%y %p\n" | sed -e 's/^/  /'
 
-      # 3) 显式查找名为 phone-caster / car-receiver 的工程（允许嵌套）
+      # 3) 查找名为 phone-caster / car-receiver 的工程（允许嵌套）
       - name: Detect Android projects in ZIP (nested-aware)
         id: detect
         shell: bash
@@ -85,38 +85,70 @@ jobs:
           echo "== car-receiver top =="
           ls -la car-receiver | head -n 120
 
-      # 5) 递归替换所有 wrapper 的分发镜像，并给所有 gradlew 授权
-      - name: Switch Gradle wrapper to CN mirror & chmod
+      # 5) 确保每个项目都有 wrapper：若无 gradlew -> 从国内镜像下载 Gradle，本地生成 wrapper，并改镜像
+      - name: Bootstrap Gradle wrapper if missing (both projects)
+        shell: bash
         run: |
           set -e
-          # 替换所有 gradle-wrapper.properties
-          while IFS= read -r f; do
-            cp "$f" "$f.bak" || true
-            sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-            # 若上面不稳可改腾讯云：
-            # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
-            echo "---- $f ----"; tail -n +1 "$f"
-          done < <(find phone-caster car-receiver -type f -path "*/gradle/wrapper/gradle-wrapper.properties")
 
-          # 给所有 gradlew 授权
-          while IFS= read -r g; do
-            chmod +x "$g" || true
-            echo "chmod +x $g"
-          done < <(find phone-caster car-receiver -type f -name "gradlew")
+          ensure_wrapper () {
+            local proj="$1"
+            echo "== ensure wrapper in $proj =="
 
-      # 6) 构建函数：自动在目录里查找 gradlew 并执行
+            WRAP=$(find "$proj" -maxdepth 3 -type f -name "gradlew" | head -n1 || true)
+            if [ -n "$WRAP" ]; then
+              echo "✓ found existing gradlew at $WRAP"
+              chmod +x "$WRAP" || true
+              return 0
+            fi
+
+            echo "⚠️  no gradlew, bootstrap wrapper..."
+            # 选择一个可用的 Gradle 版本
+            GVER="8.7"
+            URL="https://downloads.gradle-dn.com/distributions/gradle-${GVER}-bin.zip"
+            # 如需改用腾讯云镜像，改成：
+            # URL="https://mirrors.cloud.tencent.com/gradle/gradle-${GVER}-bin.zip"
+
+            mkdir -p "$HOME/gradle-dl"
+            cd "$HOME/gradle-dl"
+            if [ ! -f "gradle-${GVER}-bin.zip" ]; then
+              echo "Downloading $URL"
+              curl -L --retry 5 --retry-delay 2 -o "gradle-${GVER}-bin.zip" "$URL"
+            fi
+            rm -rf "gradle-${GVER}"
+            unzip -q "gradle-${GVER}-bin.zip"
+            export PATH="$HOME/gradle-dl/gradle-${GVER}/bin:$PATH"
+
+            cd "$GITHUB_WORKSPACE/$proj"
+            gradle --version || true
+            # 在项目内生成 wrapper（wrapper 版本用 GVER）
+            gradle wrapper --gradle-version "$GVER"
+
+            # 改 wrapper 的分发镜像到国内
+            if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+              sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' gradle/wrapper/gradle-wrapper.properties
+              # 或腾讯云：
+              # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' gradle/wrapper/gradle-wrapper.properties
+              echo "---- gradle/wrapper/gradle-wrapper.properties ----"
+              cat gradle/wrapper/gradle-wrapper.properties
+            fi
+
+            chmod +x gradlew || true
+          }
+
+          ensure_wrapper phone-caster
+          ensure_wrapper car-receiver
+
+      # 6) 用（找到或生成的）wrapper 编译
       - name: Build phone-caster (debug)
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: |
           set -e
           cd phone-caster
-          echo "== search gradlew in $(pwd) =="
-          WRAP=$(find . -maxdepth 4 -type f -name "gradlew" | head -n1 || true)
+          WRAP=$(find . -maxdepth 3 -type f -name "gradlew" | head -n1 || true)
           if [ -z "$WRAP" ]; then
-            echo "❌ 未找到 gradlew，目录树如下："
-            find . -maxdepth 4 -printf "%y %p\n"
-            exit 1
+            echo "❌ 仍未找到 gradlew"; find . -maxdepth 4 -printf "%y %p\n"; exit 1
           fi
           chmod +x "$WRAP"
           echo "Use wrapper: $WRAP"
@@ -128,12 +160,9 @@ jobs:
         run: |
           set -e
           cd car-receiver
-          echo "== search gradlew in $(pwd) =="
-          WRAP=$(find . -maxdepth 4 -type f -name "gradlew" | head -n1 || true)
+          WRAP=$(find . -maxdepth 3 -type f -name "gradlew" | head -n1 || true)
           if [ -z "$WRAP" ]; then
-            echo "❌ 未找到 gradlew，目录树如下："
-            find . -maxdepth 4 -printf "%y %p\n"
-            exit 1
+            echo "❌ 仍未找到 gradlew"; find . -maxdepth 4 -printf "%y %p\n"; exit 1
           fi
           chmod +x "$WRAP"
           echo "Use wrapper: $WRAP"
