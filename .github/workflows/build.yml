@@ -20,7 +20,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # 1) 自动定位仓库里的 ZIP（任意名字）
+      # 1) 自动找到仓库根目录里的任意 zip
       - name: Locate project ZIP
         id: zip
         shell: bash
@@ -28,12 +28,12 @@ jobs:
           set -e
           ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n1 || true)
           if [ -z "$ZIP" ]; then
-            echo "❌ 根目录没有 .zip"; exit 1
+            echo "❌ 根目录没有 .zip 文件，请把源码压缩包放到仓库根目录"; exit 1
           fi
-          echo "ZIP=$ZIP" | tee -a $GITHUB_OUTPUT
           echo "Using ZIP: $ZIP"
+          echo "ZIP=$ZIP" | tee -a $GITHUB_OUTPUT
 
-      # 2) 解压 & 打印目录树（多打印几层方便调试）
+      # 2) 解压并打印目录结构（你之前是 srczip/ScreenCastProject_ready_fixed/...）
       - name: Unzip project ZIP
         run: |
           set -e
@@ -41,60 +41,61 @@ jobs:
           echo "== Unzipped to srczip (depth 5) =="
           find srczip -maxdepth 5 -printf "%y %p\n" | sed -e 's/^/  /'
 
-      # 3) 更稳健的工程识别：
-      #    条件：目录下同时含有 (gradlew 或 gradlew.bat) AND (settings.gradle* 存在)
-      #         且包含名为 app 的模块，并在 app 目录内存在 build.gradle(.kts)
-      - name: Detect Android projects in ZIP
+      # 3) 方案1：显式查找名为 phone-caster / car-receiver 的工程（允许嵌套）
+      #    条件：目录名匹配 + 同级存在 settings.gradle(.kts) + 存在 app 模块
+      - name: Detect Android projects in ZIP (nested-aware)
         id: detect
         shell: bash
         run: |
           set -e
-          mapfile -t CANDS < <(find srczip -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -printf "%h\n" | sort -u)
-          PROJ=()
-          for root in "${CANDS[@]}"; do
-            # 有 wrapper（在同级或上一级常见）
-            if [ -f "$root/gradlew" ] || [ -f "$root/../gradlew" ] || [ -f "$root/gradlew.bat" ] || [ -f "$root/../gradlew.bat" ]; then
-              # 找 app 模块（允许多一层壳）
-              if [ -f "$root/app/build.gradle" ] || [ -f "$root/app/build.gradle.kts" ] \
-                 || [ -f "$root/*/app/build.gradle" ] || [ -f "$root/*/app/build.gradle.kts" ]; then
-                PROJ+=("$root")
+          find_one() {
+            local name="$1"
+            local got=""
+            while IFS= read -r d; do
+              if { test -f "$d/settings.gradle" || test -f "$d/settings.gradle.kts"; } \
+                 && { test -d "$d/app" || test -f "$d/app/build.gradle" || test -f "$d/app/build.gradle.kts"; }; then
+                got="$d"; break
               fi
-            fi
-          done
+            done < <(find srczip -type d -name "$name")
+            echo "$got"
+          }
 
-          echo "Found candidate roots:"
-          printf ' - %s\n' "${PROJ[@]}"
+          PHONE_DIR="$(find_one phone-caster)"
+          CAR_DIR="$(find_one car-receiver)"
 
-          if [ "${#PROJ[@]}" -lt 2 ]; then
-            echo "❌ 只找到 ${#PROJ[@]} 个工程。请确认 zip 中包含两个独立的 Android 工程（各自有 settings.gradle 与 app 模块）。"
-            exit 1
+          echo "Found:"
+          echo "  phone-caster -> ${PHONE_DIR:-<none>}"
+          echo "  car-receiver -> ${CAR_DIR:-<none>}"
+
+          if [ -z "$PHONE_DIR" ] || [ -z "$CAR_DIR" ]; then
+            echo "❌ 没找到 phone-caster 或 car-receiver（需要 settings.gradle* 与 app 模块）"; exit 1
           fi
 
-          # 取前两个
-          echo "SENDER=${PROJ[0]}"   | tee -a $GITHUB_OUTPUT
-          echo "RECEIVER=${PROJ[1]}" | tee -a $GITHUB_OUTPUT
+          echo "PHONE_DIR=$PHONE_DIR"   | tee -a $GITHUB_OUTPUT
+          echo "CAR_DIR=$CAR_DIR"       | tee -a $GITHUB_OUTPUT
 
       # 4) 规范化到固定目录
       - name: Normalize project folders
         run: |
           set -e
           rm -rf phone-caster car-receiver
-          rsync -a "${{ steps.detect.outputs.SENDER }}/"   phone-caster/
-          rsync -a "${{ steps.detect.outputs.RECEIVER }}/" car-receiver/
+          rsync -a "${{ steps.detect.outputs.PHONE_DIR }}/"   phone-caster/
+          rsync -a "${{ steps.detect.outputs.CAR_DIR }}/"     car-receiver/
           echo "== phone-caster top =="
           ls -la phone-caster | head -n 80
           echo "== car-receiver top =="
           ls -la car-receiver | head -n 80
 
-      # 5) 切换 Gradle 分发镜像并授权 gradlew
+      # 5) 切 Gradle 分发镜像，并赋权 gradlew（避免官方分发抽风）
       - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
           set -e
           for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
             if [ -f "$f" ]; then
               cp "$f" "$f.bak" || true
+              # 默认用 Gradle 中国镜像
               sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-              # 如上不稳可换腾讯云：
+              # 如需换腾讯云：注释上一行、放开下一行
               # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
               echo "---- $f ----"; tail -n +1 "$f"
             fi
@@ -102,7 +103,7 @@ jobs:
           chmod +x phone-caster/gradlew || true
           chmod +x car-receiver/gradlew || true
 
-      # 6) 编译两个工程（使用各自 wrapper）
+      # 6) 用各自 wrapper 编译 Debug 包
       - name: Build phone-caster (debug)
         working-directory: phone-caster
         env:
@@ -115,7 +116,7 @@ jobs:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
-      # 7) 收集 APK 打包
+      # 7) 收集 APK 并打包
       - name: Collect APKs into a single ZIP
         run: |
           mkdir -p out
