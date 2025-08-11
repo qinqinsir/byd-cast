@@ -1,0 +1,52 @@
+name: Build phone-caster & car-receiver APKs
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Unzip project from repo ZIP
+        run: |
+          mkdir -p phone-caster car-receiver
+          unzip -q ScreenCastProject_fixed_final.zip -d srczip
+          # 找出 zip 里真正的工程目录并拷到工作区
+          PHONE_DIR=$(find srczip -type d -name "phone-caster" | head -n1 || true)
+          CAR_DIR=$(find srczip -type d -name "car-receiver" | head -n1 || true)
+          if [ -z "$PHONE_DIR" ] || [ -z "$CAR_DIR" ]; then
+            echo "❌ 没找到 phone-caster / car-receiver 目录，请确认 ZIP 内结构"; exit 1
+          fi
+          rsync -a "$PHONE_DIR"/ phone-caster/
+          rsync -a "$CAR_DIR"/ car-receiver/
+          echo "✅ 解压完成："; ls -la phone-caster car-receiver
+
+      - name: Build phone-caster (debug)
+        working-directory: phone-caster
+        run: |
+          if [ -x ./gradlew ]; then ./gradlew assembleDebug --stacktrace; else gradle assembleDebug --stacktrace; fi
+
+      - name: Build car-receiver (debug)
+        working-directory: car-receiver
+        run: |
+          if [ -x ./gradlew ]; then ./gradlew assembleDebug --stacktrace; else gradle assembleDebug --stacktrace; fi
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: |
+            phone-caster/app/build/outputs/apk/debug/*.apk
+            car-receiver/app/build/outputs/apk/debug/*.apk
