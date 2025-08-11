@@ -4,7 +4,7 @@ on: [workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # 1) 自动寻找仓库根目录的 ZIP（任意名字），优先取第一个
+      # 1) 自动定位仓库里的 ZIP（任意名字）
       - name: Locate project ZIP
         id: zip
         shell: bash
@@ -28,39 +28,49 @@ jobs:
           set -e
           ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n1 || true)
           if [ -z "$ZIP" ]; then
-            echo "❌ 根目录没有找到 .zip 文件，请把源码压缩包放到仓库根目录再试"; exit 1
+            echo "❌ 根目录没有 .zip"; exit 1
           fi
-          echo "Using ZIP: $ZIP"
           echo "ZIP=$ZIP" | tee -a $GITHUB_OUTPUT
+          echo "Using ZIP: $ZIP"
 
-      # 2) 解压 ZIP
+      # 2) 解压 & 打印目录树（多打印几层方便调试）
       - name: Unzip project ZIP
         run: |
           set -e
           unzip -q "${{ steps.zip.outputs.ZIP }}" -d srczip
-          echo "== Unzipped to srczip =="
-          find srczip -maxdepth 3 -type d -printf "%p\n"
+          echo "== Unzipped to srczip (depth 5) =="
+          find srczip -maxdepth 5 -printf "%y %p\n" | sed -e 's/^/  /'
 
-      # 3) 自动识别两个 Android 工程（含 gradlew 且含 app/build.gradle*）
+      # 3) 更稳健的工程识别：
+      #    条件：目录下同时含有 (gradlew 或 gradlew.bat) AND (settings.gradle* 存在)
+      #         且包含名为 app 的模块，并在 app 目录内存在 build.gradle(.kts)
       - name: Detect Android projects in ZIP
         id: detect
         shell: bash
         run: |
           set -e
-          mapfile -t PROJ < <(find srczip -type f -name "gradlew" -printf "%h\n" \
-                            | while read d; do
-                                if [ -f "$d/app/build.gradle" ] || [ -f "$d/app/build.gradle.kts" ]; then
-                                  echo "$d"
-                                fi
-                              done | sort -u)
-          echo "Found projects:"
+          mapfile -t CANDS < <(find srczip -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -printf "%h\n" | sort -u)
+          PROJ=()
+          for root in "${CANDS[@]}"; do
+            # 有 wrapper（在同级或上一级常见）
+            if [ -f "$root/gradlew" ] || [ -f "$root/../gradlew" ] || [ -f "$root/gradlew.bat" ] || [ -f "$root/../gradlew.bat" ]; then
+              # 找 app 模块（允许多一层壳）
+              if [ -f "$root/app/build.gradle" ] || [ -f "$root/app/build.gradle.kts" ] \
+                 || [ -f "$root/*/app/build.gradle" ] || [ -f "$root/*/app/build.gradle.kts" ]; then
+                PROJ+=("$root")
+              fi
+            fi
+          done
+
+          echo "Found candidate roots:"
           printf ' - %s\n' "${PROJ[@]}"
 
           if [ "${#PROJ[@]}" -lt 2 ]; then
-            echo "❌ 只找到 ${#PROJ[@]} 个 Android 工程，至少需要 2 个（手机端/车机端）。"
+            echo "❌ 只找到 ${#PROJ[@]} 个工程。请确认 zip 中包含两个独立的 Android 工程（各自有 settings.gradle 与 app 模块）。"
             exit 1
           fi
 
+          # 取前两个
           echo "SENDER=${PROJ[0]}"   | tee -a $GITHUB_OUTPUT
           echo "RECEIVER=${PROJ[1]}" | tee -a $GITHUB_OUTPUT
 
@@ -71,25 +81,22 @@ jobs:
           rm -rf phone-caster car-receiver
           rsync -a "${{ steps.detect.outputs.SENDER }}/"   phone-caster/
           rsync -a "${{ steps.detect.outputs.RECEIVER }}/" car-receiver/
-          echo "== phone-caster =="
+          echo "== phone-caster top =="
           ls -la phone-caster | head -n 80
-          echo "== car-receiver =="
+          echo "== car-receiver top =="
           ls -la car-receiver | head -n 80
 
-      # 5) 切换 Gradle 分发镜像并赋权 gradlew
+      # 5) 切换 Gradle 分发镜像并授权 gradlew
       - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
           set -e
           for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
             if [ -f "$f" ]; then
               cp "$f" "$f.bak" || true
-              # 镜像1：Gradle 中国镜像（默认）
               sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-              # 可切换镜像2：腾讯云（如上不稳就把上一行注释掉、放开下一行）
+              # 如上不稳可换腾讯云：
               # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
               echo "---- $f ----"; tail -n +1 "$f"
-            else
-              echo "⚠️ 未找到 $f，跳过"
             fi
           done
           chmod +x phone-caster/gradlew || true
