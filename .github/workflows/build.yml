@@ -15,6 +15,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # 解压你仓库里的 ZIP，提取两个工程
       - name: Unzip project from repo ZIP
         run: |
           mkdir -p phone-caster car-receiver
@@ -28,20 +29,21 @@ jobs:
           rsync -a "$CAR_DIR"/ car-receiver/
           ls -la phone-caster car-receiver
 
-      # 改 wrapper 的分发地址到国内镜像，然后给 gradlew 可执行权限
+      # 改 gradle-wrapper.properties 的分发地址为国内镜像，并赋予 gradlew 可执行权限
       - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
           for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
             cp "$f" "$f.bak" || true
-            # 方案1：Gradle 中国镜像
+            # 镜像1：Gradle 中国镜像（默认）
             sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-            # 如需改用腾讯云镜像，换成这一行：
+            # 如上面不稳，可改用镜像2：腾讯云（把上一行注释，这一行去掉注释）
             # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
             echo "---- $f ----"; cat "$f"
           done
           chmod +x phone-caster/gradlew || true
           chmod +x car-receiver/gradlew || true
 
+      # 直接用各自项目的 gradle wrapper 编译（不再使用 setup-gradle，避免下载分发失败）
       - name: Build phone-caster (debug)
         working-directory: phone-caster
         env:
@@ -54,12 +56,13 @@ jobs:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
+      # 收集两个 APK 打成一个压缩包
       - name: Collect APKs into a single ZIP
         run: |
           mkdir -p out
           cp phone-caster/app/build/outputs/apk/debug/*.apk out/phone-caster-debug.apk || true
           cp car-receiver/app/build/outputs/apk/debug/*.apk out/car-receiver-debug.apk || true
-          (cd out && zip -9 -r apks.zip .)
+          (cd out && zip -9 -r apks.zip . && ls -la)
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
