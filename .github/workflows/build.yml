@@ -85,11 +85,30 @@ jobs:
           echo "== car-receiver top =="
           ls -la car-receiver | head -n 120
 
-      # 5) 确保每个项目都有 wrapper：若无 gradlew -> 从国内镜像下载 Gradle，本地生成 wrapper，并改镜像
+      # 5) 若项目没有 wrapper：多镜像兜底下载 Gradle，自举生成 wrapper，并替换分发镜像
       - name: Bootstrap Gradle wrapper if missing (both projects)
         shell: bash
         run: |
           set -e
+
+          download_gradle () {
+            local ver="$1"
+            local out="$2"
+            local urls=(
+              "https://mirrors.cloud.tencent.com/gradle/gradle-${ver}-bin.zip"
+              "https://services.gradle.org/distributions/gradle-${ver}-bin.zip"
+              "https://downloads.gradle-dn.com/distributions/gradle-${ver}-bin.zip"
+            )
+            for u in "${urls[@]}"; do
+              echo "Trying: $u"
+              if curl -4fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$out" "$u"; then
+                echo "Downloaded from: $u"
+                return 0
+              fi
+              echo "Failed: $u"
+            done
+            return 1
+          }
 
           ensure_wrapper () {
             local proj="$1"
@@ -103,17 +122,11 @@ jobs:
             fi
 
             echo "⚠️  no gradlew, bootstrap wrapper..."
-            # 选择一个可用的 Gradle 版本
             GVER="8.7"
-            URL="https://downloads.gradle-dn.com/distributions/gradle-${GVER}-bin.zip"
-            # 如需改用腾讯云镜像，改成：
-            # URL="https://mirrors.cloud.tencent.com/gradle/gradle-${GVER}-bin.zip"
-
             mkdir -p "$HOME/gradle-dl"
             cd "$HOME/gradle-dl"
             if [ ! -f "gradle-${GVER}-bin.zip" ]; then
-              echo "Downloading $URL"
-              curl -L --retry 5 --retry-delay 2 -o "gradle-${GVER}-bin.zip" "$URL"
+              download_gradle "$GVER" "gradle-${GVER}-bin.zip" || { echo "❌ 所有镜像均下载失败"; exit 1; }
             fi
             rm -rf "gradle-${GVER}"
             unzip -q "gradle-${GVER}-bin.zip"
@@ -121,18 +134,14 @@ jobs:
 
             cd "$GITHUB_WORKSPACE/$proj"
             gradle --version || true
-            # 在项目内生成 wrapper（wrapper 版本用 GVER）
             gradle wrapper --gradle-version "$GVER"
 
-            # 改 wrapper 的分发镜像到国内
             if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-              sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' gradle/wrapper/gradle-wrapper.properties
-              # 或腾讯云：
-              # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' gradle/wrapper/gradle-wrapper.properties
+              # 首选腾讯云镜像
+              sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' gradle/wrapper/gradle-wrapper.properties
               echo "---- gradle/wrapper/gradle-wrapper.properties ----"
               cat gradle/wrapper/gradle-wrapper.properties
             fi
-
             chmod +x gradlew || true
           }
 
