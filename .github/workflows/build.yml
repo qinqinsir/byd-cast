@@ -4,9 +4,10 @@ on: [workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -14,16 +15,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Gradle 8.7
+      - name: Set up Gradle 8.6
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: 8.7
+          gradle-version: 8.6
+          cache-read-only: false
 
       - name: Unzip project from repo ZIP
         run: |
           mkdir -p phone-caster car-receiver
           unzip -q ScreenCastProject_fixed_final.zip -d srczip
-          # 找出 zip 里真正的工程目录并拷到工作区
           PHONE_DIR=$(find srczip -type d -name "phone-caster" | head -n1 || true)
           CAR_DIR=$(find srczip -type d -name "car-receiver" | head -n1 || true)
           if [ -z "$PHONE_DIR" ] || [ -z "$CAR_DIR" ]; then
@@ -35,18 +36,21 @@ jobs:
 
       - name: Build phone-caster (debug)
         working-directory: phone-caster
-        run: |
-          if [ -x ./gradlew ]; then ./gradlew assembleDebug --stacktrace; else gradle assembleDebug --stacktrace; fi
+        run: gradle assembleDebug --stacktrace
 
       - name: Build car-receiver (debug)
         working-directory: car-receiver
-        run: |
-          if [ -x ./gradlew ]; then ./gradlew assembleDebug --stacktrace; else gradle assembleDebug --stacktrace; fi
+        run: gradle assembleDebug --stacktrace
 
-      - name: Upload APK artifacts
+      - name: Collect APKs into a single ZIP
+        run: |
+          mkdir -p out
+          cp phone-caster/app/build/outputs/apk/debug/*.apk out/phone-caster-debug.apk || true
+          cp car-receiver/app/build/outputs/apk/debug/*.apk out/car-receiver-debug.apk || true
+          (cd out && zip -9 -r apks.zip .)
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apks
-          path: |
-            phone-caster/app/build/outputs/apk/debug/*.apk
-            car-receiver/app/build/outputs/apk/debug/*.apk
+          path: out/apks.zip
