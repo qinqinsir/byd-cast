@@ -32,15 +32,28 @@ jobs:
           fi
           rsync -a "$PHONE_DIR"/ phone-caster/
           rsync -a "$CAR_DIR"/ car-receiver/
-          echo "✅ 解压完成："; ls -la phone-caster car-receiver
+          ls -la phone-caster car-receiver
+
+      # ★★★ 新增：把 Gradle 分发地址切到国内镜像（腾讯云/Gradle 中国镜像，二选一）
+      - name: Switch Gradle distribution mirror
+        run: |
+          for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
+            # 备份
+            cp "$f" "$f.bak" || true
+            # 常用镜像1：Gradle 中国镜像
+            sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
+            # 可改用镜像2：腾讯云
+            # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
+            echo "---- $f ----"; cat "$f"
+          done
 
       - name: Build phone-caster (debug)
         working-directory: phone-caster
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace || gradle assembleDebug --stacktrace
 
       - name: Build car-receiver (debug)
         working-directory: car-receiver
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace || gradle assembleDebug --stacktrace
 
       - name: Collect APKs into a single ZIP
         run: |
