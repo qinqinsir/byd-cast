@@ -28,12 +28,12 @@ jobs:
           set -e
           ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n1 || true)
           if [ -z "$ZIP" ]; then
-            echo "❌ 根目录没有 .zip 文件，请把源码压缩包放到仓库根目录"; exit 1
+            echo "❌ 根目录没有 .zip 文件"; exit 1
           fi
           echo "Using ZIP: $ZIP"
           echo "ZIP=$ZIP" | tee -a $GITHUB_OUTPUT
 
-      # 2) 解压并打印目录结构（你之前是 srczip/ScreenCastProject_ready_fixed/...）
+      # 2) 解压并打印结构
       - name: Unzip project ZIP
         run: |
           set -e
@@ -41,8 +41,7 @@ jobs:
           echo "== Unzipped to srczip (depth 5) =="
           find srczip -maxdepth 5 -printf "%y %p\n" | sed -e 's/^/  /'
 
-      # 3) 方案1：显式查找名为 phone-caster / car-receiver 的工程（允许嵌套）
-      #    条件：目录名匹配 + 同级存在 settings.gradle(.kts) + 存在 app 模块
+      # 3) 显式查找名为 phone-caster / car-receiver 的工程（允许嵌套）
       - name: Detect Android projects in ZIP (nested-aware)
         id: detect
         shell: bash
@@ -82,41 +81,65 @@ jobs:
           rsync -a "${{ steps.detect.outputs.PHONE_DIR }}/"   phone-caster/
           rsync -a "${{ steps.detect.outputs.CAR_DIR }}/"     car-receiver/
           echo "== phone-caster top =="
-          ls -la phone-caster | head -n 80
+          ls -la phone-caster | head -n 120
           echo "== car-receiver top =="
-          ls -la car-receiver | head -n 80
+          ls -la car-receiver | head -n 120
 
-      # 5) 切 Gradle 分发镜像，并赋权 gradlew（避免官方分发抽风）
+      # 5) 递归替换所有 wrapper 的分发镜像，并给所有 gradlew 授权
       - name: Switch Gradle wrapper to CN mirror & chmod
         run: |
           set -e
-          for f in phone-caster/gradle/wrapper/gradle-wrapper.properties car-receiver/gradle/wrapper/gradle-wrapper.properties; do
-            if [ -f "$f" ]; then
-              cp "$f" "$f.bak" || true
-              # 默认用 Gradle 中国镜像
-              sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
-              # 如需换腾讯云：注释上一行、放开下一行
-              # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
-              echo "---- $f ----"; tail -n +1 "$f"
-            fi
-          done
-          chmod +x phone-caster/gradlew || true
-          chmod +x car-receiver/gradlew || true
+          # 替换所有 gradle-wrapper.properties
+          while IFS= read -r f; do
+            cp "$f" "$f.bak" || true
+            sed -i 's#https://services.gradle.org/distributions#https://downloads.gradle-dn.com/distributions#g' "$f"
+            # 若上面不稳可改腾讯云：
+            # sed -i 's#https://services.gradle.org/distributions#https://mirrors.cloud.tencent.com/gradle#g' "$f"
+            echo "---- $f ----"; tail -n +1 "$f"
+          done < <(find phone-caster car-receiver -type f -path "*/gradle/wrapper/gradle-wrapper.properties")
 
-      # 6) 用各自 wrapper 编译 Debug 包
+          # 给所有 gradlew 授权
+          while IFS= read -r g; do
+            chmod +x "$g" || true
+            echo "chmod +x $g"
+          done < <(find phone-caster car-receiver -type f -name "gradlew")
+
+      # 6) 构建函数：自动在目录里查找 gradlew 并执行
       - name: Build phone-caster (debug)
-        working-directory: phone-caster
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: |
+          set -e
+          cd phone-caster
+          echo "== search gradlew in $(pwd) =="
+          WRAP=$(find . -maxdepth 4 -type f -name "gradlew" | head -n1 || true)
+          if [ -z "$WRAP" ]; then
+            echo "❌ 未找到 gradlew，目录树如下："
+            find . -maxdepth 4 -printf "%y %p\n"
+            exit 1
+          fi
+          chmod +x "$WRAP"
+          echo "Use wrapper: $WRAP"
+          "$WRAP" --no-daemon --stacktrace assembleDebug
 
       - name: Build car-receiver (debug)
-        working-directory: car-receiver
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: |
+          set -e
+          cd car-receiver
+          echo "== search gradlew in $(pwd) =="
+          WRAP=$(find . -maxdepth 4 -type f -name "gradlew" | head -n1 || true)
+          if [ -z "$WRAP" ]; then
+            echo "❌ 未找到 gradlew，目录树如下："
+            find . -maxdepth 4 -printf "%y %p\n"
+            exit 1
+          fi
+          chmod +x "$WRAP"
+          echo "Use wrapper: $WRAP"
+          "$WRAP" --no-daemon --stacktrace assembleDebug
 
-      # 7) 收集 APK 并打包
+      # 7) 收集 APK 打包
       - name: Collect APKs into a single ZIP
         run: |
           mkdir -p out
